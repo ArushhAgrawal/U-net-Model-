@@ -5,10 +5,12 @@ import torchvision.transforms.functional as TF
 import numpy as np
 import os
 from torch.utils.data import Dataset, DataLoader, random_split
+import time
 from PIL import Image
-
+import tqdm
+device= "mps" if torch.mps.is_available() else "cpu"
 class DoubleConv(nn.Module):
-    def __init__(self, in_features, out_features):
+    def __init__(self, out_features, in_features=1):
         super().__init__()
         self.convstack= nn.Sequential(
             nn.Conv2d(in_features, out_features, kernel_size=3, stride=1, padding=1, bias=False),
@@ -70,7 +72,7 @@ class UNET(nn.Module):
 
 #loading image dataset
 class ImageDataset(Dataset):
-    def __init__ (self, image_dir, mask_dir, resize_shape=(160,160), max_image=224):
+    def __init__ (self, image_dir, mask_dir, resize_shape=(160,160), max_image=190):
         self.image_dir= image_dir
         self.mask_dir= mask_dir
         self.reshape= resize_shape
@@ -97,10 +99,36 @@ class ImageDataset(Dataset):
         mask_tensor= mask_tensor.unsqueeze(0)#converts from [h,w] to [1,h,w]
         return image_tensor, mask_tensor
 
-Dataset= ImageDataset(image_dir="train_images",  mask_dir="train_masks", resize_shape=(160,160), max_image=224)
-train_set, test_set= random_split(Dataset, [174,50])
-train_loader= DataLoader(train_set, batch_size=4, shuffle=True)
-test_loader= DataLoader(test_set, batch=4, shuffle=False)
+# Dataset= ImageDataset(image_dir="data/train_image/",  mask_dir="data/train_mask", resize_shape=(160,160), max_image=190)
 
+device= "mps" if torch.mps.is_available() else "cpu"
+model= UNET(in_channels=3, out_channels=1).to(device)
+
+#training/eval
+def train(loss_fn, epochs, model, optimizer, train_data, test_data):
+    start= time.time()
+    net_loss_train= []
+    net_loss_test= []
+    epoch_bar= tqdm(range(epochs), desc= "Training U-Net")
+    for epoch in epoch_bar:
+        model.train()
+        for batch, (x,y) in enumerate(train_data):
+            x.to(device), y.to(device)
+            y_train_logits= model(x.to(device))
+            loss_train=loss_fn(y_train_logits,y.to(device))
+            optimizer.zero_grad()
+            loss_train.backward()
+            optimizer.step()
+            net_loss_train=net_loss_train.append(loss_train.item())
+        model.eval()
+        with torch.inference_mode():
+            for batch, (x,y) in enumerate(test_data):
+                y_logits_test= model(x.to(device))
+                loss_test= loss_fn(y_logits_test, y.to(device)) 
+                net_loss_test=net_loss_test.append(loss_test.itme())#why item is imp since if we dont do item it would be like this loss value, mps, gradfunc all this if we do item its just the loss value
+    end=time.time()
+    return end-start, loss_train, loss_test, net_loss_train, net_loss_test  
+optimizer= torch.optim.Adam(model.parameters(), lr=0.001)
+loss_fn= nn.BCEWithLogitsLoss()
 
 
