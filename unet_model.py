@@ -10,7 +10,7 @@ from PIL import Image
 import tqdm
 device= "mps" if torch.mps.is_available() else "cpu"
 class DoubleConv(nn.Module):
-    def __init__(self, out_features, in_features=1):
+    def __init__(self, in_features, out_features ):
         super().__init__()
         self.convstack= nn.Sequential(
             nn.Conv2d(in_features, out_features, kernel_size=3, stride=1, padding=1, bias=False),
@@ -24,7 +24,7 @@ class DoubleConv(nn.Module):
         return self.convstack(x)
 
 class UNET(nn.Module):
-    def __init__(self, in_channels,  out_channels, features=[64,128,256,512]):
+    def __init__(self, in_channels=3,  out_channels=1, features=[64,128,256,512]):
         super().__init__()
         self.up= nn.ModuleList()
         self.down= nn.ModuleList()
@@ -76,11 +76,10 @@ class ImageDataset(Dataset):
         self.image_dir= image_dir
         self.mask_dir= mask_dir
         self.reshape= resize_shape
-
-        all_images= sorted(os.listdir(image_dir))#this sorts the list so computer doest do random input and messes the data
+        all_images = sorted([f for f in os.listdir(image_dir) if not f.startswith('.')])#this sorts the list so computer doest do random input and messes the data
         self.images= all_images[:max_image]
     def __len__(self):
-        return len(self.image_dir)#returns the length so the epochs can be known when to end
+        return len(self.images)#returns the length so the epochs can be known when to end
     def __getitem__(self,index):
         image_name=self.images[index]
         image_path= os.path.join(self.image_dir, image_name)#creates a direct path to the image
@@ -88,20 +87,32 @@ class ImageDataset(Dataset):
         mask_path= os.path.join(self.mask_dir, mask_name)#direct path to mask
         #loading image on computer memory
         image= Image.open(image_path).convert("RGB")
-        mask= Image.open("mask_path").convert("RGB")
+        mask= Image.open(mask_path).convert("L")
         #resizing image
         image= TF.resize(image,self.reshape)
-        mask=TF.resize(image,self.reshape, 
+        mask=TF.resize(mask,self.reshape, 
                        interpolation=TF.InterpolationMode.NEAREST)#using interpolation converts messy chunk into 0,1 cons- making it pixelated
-        image_tensor= TF.to_tensor(image_path)
+        image_tensor= TF.to_tensor(image)
         mask_array= np.array(mask)
-        mask_tensor= torch.from_numpy(mask).float()
-        mask_tensor= mask_tensor.unsqueeze(0)#converts from [h,w] to [1,h,w]
+        mask_tensor= TF.to_tensor(mask)
         return image_tensor, mask_tensor
+#loading data
+full_data= ImageDataset(image_dir="data/train_image/",  mask_dir="data/train_mask", resize_shape=(160,160), max_image=190)
+train_size= int(0.8*(len(full_data)))
+val_size= len(full_data)-train_size
+train_dataset, val_dataset= random_split(full_data, [train_size, val_size])
+train_loader=DataLoader(
+    dataset=train_dataset,
+    batch_size=8,        
+    shuffle=True)
+val_loader= DataLoader(
+    dataset=val_dataset,
+    batch_size=8,
+    shuffle=False)
 
-# Dataset= ImageDataset(image_dir="data/train_image/",  mask_dir="data/train_mask", resize_shape=(160,160), max_image=190)
-
+#setting up device agnostic code
 device= "mps" if torch.mps.is_available() else "cpu"
+#defining model
 model= UNET(in_channels=3, out_channels=1).to(device)
 
 #training/eval
@@ -109,7 +120,7 @@ def train(loss_fn, epochs, model, optimizer, train_data, test_data):
     start= time.time()
     net_loss_train= []
     net_loss_test= []
-    epoch_bar= tqdm(range(epochs), desc= "Training U-Net")
+    epoch_bar= tqdm.tqdm(range(epochs), desc= "Training U-Net")
     for epoch in epoch_bar:
         model.train()
         for batch, (x,y) in enumerate(train_data):
@@ -119,16 +130,19 @@ def train(loss_fn, epochs, model, optimizer, train_data, test_data):
             optimizer.zero_grad()
             loss_train.backward()
             optimizer.step()
-            net_loss_train=net_loss_train.append(loss_train.item())
+            net_loss_train.append(loss_train.item())
         model.eval()
         with torch.inference_mode():
             for batch, (x,y) in enumerate(test_data):
                 y_logits_test= model(x.to(device))
                 loss_test= loss_fn(y_logits_test, y.to(device)) 
-                net_loss_test=net_loss_test.append(loss_test.itme())#why item is imp since if we dont do item it would be like this loss value, mps, gradfunc all this if we do item its just the loss value
+                net_loss_test.append(loss_test.item())#why item is imp since if we dont do item it would be like this loss value, mps, gradfunc all this if we do item its just the loss value
     end=time.time()
-    return end-start, loss_train, loss_test, net_loss_train, net_loss_test  
+    print("\ntime taken", end-start,"\nloss train", loss_train,"\nloss test", loss_test, "\nloss every batch train", net_loss_train, "\nloss every batch test",net_loss_test) 
 optimizer= torch.optim.Adam(model.parameters(), lr=0.001)
 loss_fn= nn.BCEWithLogitsLoss()
+model_train= train(loss_fn=loss_fn, epochs=3, model= model, optimizer=optimizer, train_data=train_loader, 
+                   test_data= val_loader)
+print(model_train)
 
 
